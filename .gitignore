@@ -1,0 +1,92 @@
+# =========================================
+# 🎬 Node.js / Express Backend .gitignore
+# =========================================
+
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files (API keys, DB URIs, AWS creds)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# OS / Editor specific junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+desktop.ini
+
+# IDE / Editor folders
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Log files
+logs/
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Temp / cache / build output
+dist/
+build/
+.tmp/
+temp/
+.cache/
+coverage/
+debug/
+
+# Local uploads (if used for testing)
+uploads/
+public/uploads/
+tmp/
+temp-hls/
+hls-output/
+*.mp4
+*.m3u8
+*.ts
+
+# FFmpeg temp conversion files
+*.avi
+*.mov
+*.flv
+*.webm
+*.ogg
+
+# OS temp folders
+*.bak
+*.old
+*.tmp
+
+# MongoDB dump / backups
+dump/
+data/
+mongodb-data/
+
+# Lock files (optional)
+# Uncomment the one you don't use
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# Ignore compiled TypeScript (if used)
+*.tsbuildinfo
+
+# Hosting / deployment artifacts
+.vercel/
+.netlify/
+.render/
+.heroku/
+firebase.json
