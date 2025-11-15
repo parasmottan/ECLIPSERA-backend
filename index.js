@@ -41,6 +41,7 @@ const io = new Server(server, {
 });
 
 // ✅ Socket.io logic
+// ✅ Socket.io logic (FINAL VERSION)
 io.on("connection", (socket) => {
   console.log("⚡ User connected:", socket.id);
 
@@ -51,27 +52,34 @@ io.on("connection", (socket) => {
   });
 
   // 💬 Chat Message
-  socket.on("send_message", (data) => {
-    const { roomId, text, sender } = data;
+  socket.on("send_message", ({ roomId, text, sender }) => {
     socket.to(roomId).emit("receive_message", { text, sender });
   });
 
-  // 🎥 Video Sync Events
+  // 🎥 REAL-TIME: Movie Ready
+  socket.on("video_ready", ({ roomId, hlsUrl }) => {
+    console.log(`🎬 Broadcasting converted video to room ${roomId}`);
+    socket.to(roomId).emit("video_ready", hlsUrl);
+  });
+
+  // 🗑 REAL-TIME: Movie Deleted
+  socket.on("video_deleted", ({ roomId }) => {
+    console.log(`🗑 Broadcasting delete event for room ${roomId}`);
+    socket.to(roomId).emit("video_deleted");
+  });
+
   // ▶️ Play
   socket.on("play_video", ({ roomId, currentTime }) => {
-    console.log(`▶️ Video played in room ${roomId} at ${currentTime}s`);
     socket.to(roomId).emit("play_video", { currentTime });
   });
 
-  // ⏸️ Pause
+  // ⏸ Pause
   socket.on("pause_video", ({ roomId, currentTime }) => {
-    console.log(`⏸️ Video paused in room ${roomId} at ${currentTime}s`);
     socket.to(roomId).emit("pause_video", { currentTime });
   });
 
   // ⏩ Seek
   socket.on("seek_video", ({ roomId, currentTime }) => {
-    console.log(`⏩ Video seeked in room ${roomId} to ${currentTime}s`);
     socket.to(roomId).emit("seek_video", { currentTime });
   });
 
@@ -80,6 +88,7 @@ io.on("connection", (socket) => {
     console.log("🔴 User disconnected:", socket.id);
   });
 });
+
 
 // ✅ Start Server
 server.listen(PORT, () => {
