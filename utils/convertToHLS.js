@@ -1,4 +1,11 @@
 import ffmpeg from "fluent-ffmpeg";
+import ffmpegPath from "ffmpeg-static";
+import ffprobePath from "ffprobe-static";
+
+// Set static ffmpeg + ffprobe paths for Zeabur / Render / Railway
+ffmpeg.setFfmpegPath(ffmpegPath);
+ffmpeg.setFfprobePath(ffprobePath.path);
+
 import fs from "fs";
 import path from "path";
 import os from "os";
