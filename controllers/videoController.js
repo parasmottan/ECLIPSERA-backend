@@ -14,138 +14,116 @@ const s3 = new S3Client({
   },
 });
 
+// Normalize helper (repeat mat kar)
+const normalize = (id) => id.toLowerCase().trim();
 
-// 🎬 PROCESS MOVIE (Safe: No duplicate processing)
+// 🎬 PROCESS MOVIE (NO DUPLICATE PROCESSING)
 export const processMovie = async (req, res) => {
   try {
     const { movieUrl, roomId } = req.body;
+    if (!movieUrl || !roomId)
+      return res.status(400).json({ success: false, message: "Missing fields" });
 
-    if (!movieUrl || !roomId) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing movieUrl or roomId",
-      });
-    }
+    const normalizedRoomId = normalize(roomId);
+    const fileKey = new URL(movieUrl).pathname.slice(1);
 
-    const normalizedRoomId = roomId.toLowerCase().trim();
+    console.log("🎥 Requested processing for:", normalizedRoomId);
 
-    console.log("🎥 Processing movie for room:", normalizedRoomId);
-
-    // 1️⃣ CHECK IF ALREADY READY
+    // 1️⃣ FETCH EXISTING
     const existing = await RoomVideo.findOne({ roomId: normalizedRoomId });
 
-    if (existing && existing.status === "ready") {
-      console.log("⚡ Already processed → returning existing HLS link");
-      return res.status(200).json({
-        success: true,
-        hlsUrl: existing.hlsUrl,
-        message: "Already processed",
-      });
+    if (existing) {
+      if (existing.status === "ready") {
+        console.log("⚡ Already ready → returning HLS");
+        return res.status(200).json({ success: true, hlsUrl: existing.hlsUrl });
+      }
+
+      if (existing.status === "processing") {
+        console.log("⏳ Already processing — skip duplicate job");
+        return res.status(202).json({ success: true, status: "processing" });
+      }
     }
 
-    // 2️⃣ CHECK IF PROCESSING
-    if (existing && existing.status === "processing") {
-      console.log("⏳ Already processing → returning status");
-      return res.status(202).json({
-        success: true,
-        message: "Processing already in progress",
-        status: "processing",
-      });
-    }
-
-    // 3️⃣ CLAIM THE JOB (NO DUPLICATE CONVERSION EVER)
-    const claimed = await RoomVideo.findOneAndUpdate(
+    // 2️⃣ CLAIM JOB (PREVENT DUPLICATE CONVERSION)
+    await RoomVideo.findOneAndUpdate(
       { roomId: normalizedRoomId },
       {
         roomId: normalizedRoomId,
         status: "processing",
-        fileKey: new URL(movieUrl).pathname.slice(1),
+        fileKey,
+        hlsUrl: null,
+        error: null,
       },
-      { upsert: true, new: true }
+      { upsert: true }
     );
 
-    console.log("🔐 Job claimed:", claimed.roomId);
+    console.log("🔐 Job claimed for:", normalizedRoomId);
 
-    // 4️⃣ START CONVERSION
+    // 3️⃣ START CONVERSION
     const hlsUrl = await convertToHLS(movieUrl, normalizedRoomId);
 
-    // 5️⃣ DELETE ORIGINAL MP4
-    const key = claimed.fileKey;
+    // 4️⃣ DELETE ORIGINAL MP4
     await s3.send(
       new DeleteObjectCommand({
         Bucket: process.env.AWS_BUCKET,
-        Key: key,
+        Key: fileKey,
       })
     );
 
-    // 6️⃣ UPDATE AS READY
+    // 5️⃣ SAVE STATUS = READY
     const updated = await RoomVideo.findOneAndUpdate(
       { roomId: normalizedRoomId },
       {
         status: "ready",
         hlsUrl,
-        fileKey: key,
+        fileKey,
+        error: null,
       },
       { new: true }
     );
 
-    console.log("✅ Final saved video:", updated);
+    console.log("✅ Final saved:", updated);
 
     return res.status(200).json({ success: true, hlsUrl });
   } catch (err) {
-    console.error("🎬 processMovie Error:", err);
+    console.error("❌ processMovie ERROR:", err.message);
 
-    // 7️⃣ MARK FAILED
+    // Mark job as failed
+    const rid = normalize(req.body.roomId || "");
     await RoomVideo.findOneAndUpdate(
-      { roomId: req.body.roomId.toLowerCase().trim() },
-      {
-        status: "failed",
-        error: err.message,
-      }
+      { roomId: rid },
+      { status: "failed", error: err.message }
     );
 
     return res.status(500).json({
       success: false,
-      message: "Video processing failed",
+      message: "Processing failed",
       error: err.message,
     });
   }
 };
 
-
-
-
-
-
-// 🧹 DELETE MOVIE (remove from S3 + DB)
+// 🗑 DELETE MOVIE
 export const deleteMovie = async (req, res) => {
   try {
     const { fileKey } = req.body;
+    if (!fileKey)
+      return res.status(400).json({ success: false, message: "Missing fileKey" });
 
-    if (!fileKey || typeof fileKey !== "string") {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid or missing fileKey",
-      });
-    }
+    const roomId = fileKey.split("/")[1]; // rooms/{roomId}/converted
+    const prefix = `rooms/${roomId}/`;
 
-    // Extract prefix (for converted HLS segments)
-    const prefixParts = fileKey.split("/");
-    const roomPrefix = prefixParts[prefixParts.length - 1]?.split(".")[0];
+    console.log("🗑 Deleting files for prefix:", prefix);
 
-    // 🗑️ Delete all converted HLS files from S3
-    const listedObjects = await s3.send(
+    const objects = await s3.send(
       new ListObjectsV2Command({
         Bucket: process.env.AWS_BUCKET,
-        Prefix: `rooms/`, // broader path to catch all rooms folders
+        Prefix: prefix,
       })
     );
 
-    if (listedObjects.Contents) {
-      const matchingObjects = listedObjects.Contents.filter((obj) =>
-        obj.Key.includes(roomPrefix)
-      );
-      for (const obj of matchingObjects) {
+    if (objects?.Contents?.length) {
+      for (const obj of objects.Contents) {
         await s3.send(
           new DeleteObjectCommand({
             Bucket: process.env.AWS_BUCKET,
@@ -155,58 +133,39 @@ export const deleteMovie = async (req, res) => {
       }
     }
 
-    // 🧹 Delete original uploaded file
-    await s3.send(
-      new DeleteObjectCommand({
-        Bucket: process.env.AWS_BUCKET,
-        Key: fileKey,
-      })
-    );
+    await RoomVideo.deleteOne({ roomId });
 
-    // 🧼 Remove entry from MongoDB
-    await RoomVideo.deleteOne({ fileKey });
-
-    console.log("🗑️ Deleted movie from S3 and DB:", fileKey);
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Movie and converted files deleted successfully",
+      message: "Movie + HLS deleted",
     });
   } catch (err) {
-    console.error("❌ Delete Movie Error:", err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error("❌ deleteMovie ERROR:", err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 };
 
-// 🎥 GET ROOM VIDEO (Auto-fetch existing movie when room opens)
+// 🎥 GET EXISTING MOVIE
 export const getRoomVideo = async (req, res) => {
   try {
     const { roomId } = req.params;
+    if (!roomId)
+      return res.status(400).json({ success: false, message: "Missing roomId" });
 
-    if (!roomId) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing roomId",
-      });
-    }
-
-    const normalizedRoomId = roomId.toLowerCase().trim();
-    console.log("🎯 Fetching video for room:", normalizedRoomId);
+    const normalizedRoomId = normalize(roomId);
+    console.log("🎯 Fetching video for:", normalizedRoomId);
 
     const video = await RoomVideo.findOne({ roomId: normalizedRoomId });
 
-    if (!video) {
-      console.log("⚠️ No video found for room:", normalizedRoomId);
+    if (!video)
       return res.status(404).json({
         success: false,
-        message: "No video found for this room",
+        message: "No movie found",
       });
-    }
 
-    console.log("✅ Found video:", video.hlsUrl);
-    res.status(200).json({ success: true, video });
+    return res.status(200).json({ success: true, video });
   } catch (err) {
-    console.error("Fetch Room Video Error:", err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error("❌ getRoomVideo ERROR:", err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 };
