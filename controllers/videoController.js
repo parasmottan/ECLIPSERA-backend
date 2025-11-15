@@ -14,7 +14,8 @@ const s3 = new S3Client({
   },
 });
 
-// 🎬 PROCESS MOVIE (Upload → Convert → Save in DB)
+
+// 🎬 PROCESS MOVIE (Safe: No duplicate processing)
 export const processMovie = async (req, res) => {
   try {
     const { movieUrl, roomId } = req.body;
@@ -26,16 +27,50 @@ export const processMovie = async (req, res) => {
       });
     }
 
-    // 🧠 Normalize roomId (so AWS + DB both use same lowercase format)
     const normalizedRoomId = roomId.toLowerCase().trim();
 
     console.log("🎥 Processing movie for room:", normalizedRoomId);
 
-    // 🪄 Convert MP4 to HLS and upload to S3
+    // 1️⃣ CHECK IF ALREADY READY
+    const existing = await RoomVideo.findOne({ roomId: normalizedRoomId });
+
+    if (existing && existing.status === "ready") {
+      console.log("⚡ Already processed → returning existing HLS link");
+      return res.status(200).json({
+        success: true,
+        hlsUrl: existing.hlsUrl,
+        message: "Already processed",
+      });
+    }
+
+    // 2️⃣ CHECK IF PROCESSING
+    if (existing && existing.status === "processing") {
+      console.log("⏳ Already processing → returning status");
+      return res.status(202).json({
+        success: true,
+        message: "Processing already in progress",
+        status: "processing",
+      });
+    }
+
+    // 3️⃣ CLAIM THE JOB (NO DUPLICATE CONVERSION EVER)
+    const claimed = await RoomVideo.findOneAndUpdate(
+      { roomId: normalizedRoomId },
+      {
+        roomId: normalizedRoomId,
+        status: "processing",
+        fileKey: new URL(movieUrl).pathname.slice(1),
+      },
+      { upsert: true, new: true }
+    );
+
+    console.log("🔐 Job claimed:", claimed.roomId);
+
+    // 4️⃣ START CONVERSION
     const hlsUrl = await convertToHLS(movieUrl, normalizedRoomId);
 
-    // 🧹 Delete original MP4 from S3 (save space)
-    const key = new URL(movieUrl).pathname.slice(1);
+    // 5️⃣ DELETE ORIGINAL MP4
+    const key = claimed.fileKey;
     await s3.send(
       new DeleteObjectCommand({
         Bucket: process.env.AWS_BUCKET,
@@ -43,25 +78,44 @@ export const processMovie = async (req, res) => {
       })
     );
 
-    // 💾 Save or update room video record in MongoDB
-    const savedVideo = await RoomVideo.findOneAndUpdate(
+    // 6️⃣ UPDATE AS READY
+    const updated = await RoomVideo.findOneAndUpdate(
       { roomId: normalizedRoomId },
-      { hlsUrl, fileKey: key },
-      { upsert: true, new: true }
+      {
+        status: "ready",
+        hlsUrl,
+        fileKey: key,
+      },
+      { new: true }
     );
 
-    console.log("✅ Saved video to DB:", savedVideo);
+    console.log("✅ Final saved video:", updated);
 
-    res.status(200).json({ success: true, hlsUrl });
+    return res.status(200).json({ success: true, hlsUrl });
   } catch (err) {
     console.error("🎬 processMovie Error:", err);
-    res.status(500).json({
+
+    // 7️⃣ MARK FAILED
+    await RoomVideo.findOneAndUpdate(
+      { roomId: req.body.roomId.toLowerCase().trim() },
+      {
+        status: "failed",
+        error: err.message,
+      }
+    );
+
+    return res.status(500).json({
       success: false,
       message: "Video processing failed",
       error: err.message,
     });
   }
 };
+
+
+
+
+
 
 // 🧹 DELETE MOVIE (remove from S3 + DB)
 export const deleteMovie = async (req, res) => {

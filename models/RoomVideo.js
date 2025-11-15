@@ -7,14 +7,22 @@ const roomVideoSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
-    hlsUrl: {
-      type: String,
-      required: true,
-    },
-    fileKey: {
-      type: String,
-      required: true,
-    },
+
+   status: {
+  type: String,
+  enum: ["pending", "processing", "ready", "failed"],
+  default: "pending",
+},
+hlsUrl: {
+  type: String,
+  default: null,
+},
+fileKey: {
+  type: String,
+  default: null,
+},
+    error: { type: String, default: null },
+
     uploadedAt: {
       type: Date,
       default: Date.now,
